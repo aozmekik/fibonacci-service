@@ -1,0 +1,11 @@
+# commit to be tagged for the new release
+commit = "HEAD"
+
+project_name = "fibonacci-service"
+github_repo = "aozmekik/fibonacci-service"
+match_deps = "^github.com/(aozmekik/[a-zA-Z0-9-]+)$"
+
+# previous = -
+# pre_release = true
+
+# [notes]

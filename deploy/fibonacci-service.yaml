@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fibonacci-service
+  labels:
+    app.kubernetes.io/name: fibonacci-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fibonacci-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fibonacci-service
+    spec:
+      # The service does not talk to the Kubernetes API.
+      automountServiceAccountToken: false
+      # Covers the preStop delay and the default --shutdown-timeout of 30s.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: fibonacci-service
+      containers:
+        - name: fibonacci-service
+          # A release, and not latest, which would be a different image every time a pod starts.
+          image: ghcr.io/aozmekik/fibonacci-service:v0.1.0
+          env:
+            # The Go runtime lets the heap grow to twice what is in use before it collects, and it
+            # does not know the limit below. This makes it collect in time, and has to stay under it.
+            - name: GOMEMLIMIT
+              value: 56MiB
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 2122
+          # There is no liveness probe on purpose. The process has no state to get stuck in,
+          # so a restart would not fix anything a probe could notice.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          lifecycle:
+            # The pod keeps getting new connections for a moment after it is told to stop,
+            # until its removal from the endpoints reaches every node. Keep serving meanwhile.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            # The memory follows --max-n, see the README: 5 MiB by default, and 51 MiB at 20000 with
+            # the GOMEMLIMIT above, before the first connection. At the default --max-n a connection
+            # adds 25 KiB, or 125 KiB while its client does not read, for up to the 256 of
+            # --max-connections on each server. Raise the limit and GOMEMLIMIT along with --max-n,
+            # and keep --max-connections to what fits.
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fibonacci-service
+  labels:
+    app.kubernetes.io/name: fibonacci-service
+spec:
+  selector:
+    app.kubernetes.io/name: fibonacci-service
+  ports:
+    # The metrics are left out: they are scraped from the pods, not through the service.
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fibonacci-service
+  labels:
+    app.kubernetes.io/name: fibonacci-service
+spec:
+  # Node drains, such as the ones of a Talos upgrade, take the pods down one at a time.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fibonacci-service
